@@ -19,25 +19,22 @@ jobs:
       run: |
         brew install ldid xz make
 
-    # 2. Вручную клонируем Theos в домашнюю директорию
+    # 2. Вручную клонируем Theos
     - name: Clone Theos
       run: |
         export THEOS=$HOME/theos
         git clone --recursive https://github.com/theos/theos.git $THEOS
         echo "THEOS=$THEOS" >> $GITHUB_ENV
 
-    # 3. Вручную скачиваем и распаковываем SDK с правильными правами
+    # 3. Скачиваем и распаковываем SDK в формате tar.xz (исправляет ошибку симлинков)
     - name: Download and Extract SDKs
       run: |
-        # Создаем директорию для SDK
         mkdir -p $THEOS/sdks
-        # Скачиваем архив с SDK
-        curl -L -o sdks.zip https://github.com/theos/sdks/archive/refs/heads/master.zip
-        # Распаковываем во временную папку
-        unzip -q sdks.zip -d sdks_temp
-        # Перемещаем содержимое в директорию Theos
-        mv sdks_temp/sdks-master/* $THEOS/sdks/
-        # Даем полные права на директорию с SDK
+        # Скачиваем официальный SDK в формате tar.xz
+        curl -L -o iPhoneOS.sdk.tar.xz https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz
+        # Распаковываем архив tar.xz напрямую в папку sdks
+        tar -xf iPhoneOS.sdk.tar.xz -C $THEOS/sdks
+        # Убедимся, что права доступа корректны (на всякий случай)
         chmod -R 755 $THEOS/sdks
 
     # 4. Компилируем ваш твик
@@ -50,6 +47,7 @@ jobs:
     - name: Extract and Inject Dylib
       run: |
         mkdir extracted
+        # Используем unzip для распаковки самой игры (это должно работать, так как игра не содержит проблемных симлинков)
         unzip app.ipa -d extracted
         
         DYLIB_PATH=$(find .theos/obj -name "*.dylib" | head -n 1)
@@ -66,7 +64,8 @@ jobs:
     - name: Package IPA
       run: |
         cd extracted
-        zip -r ../HackedGeometryDash.ipa Payload/
+        # ВАЖНО: используем флаг -y, чтобы сохранить симлинки при упаковке
+        zip -ry ../HackedGeometryDash.ipa Payload/
         echo "IPA-файл создан!"
 
     - name: Upload Artifact
