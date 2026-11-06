@@ -1,0 +1,8 @@
+Package: com.hayrxdevofficial.myhack
+Name: MyHack
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Custom Noclip and AutoBot for Geometry Dash
+Maintainer: hayrxdevofficial
+Author: hayrxdevofficial
+Section: Tweaks
