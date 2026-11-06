@@ -8,7 +8,7 @@ on:
 jobs:
   build:
     name: Build and Package IPA
-    runs-on: macos-13 # Используем macOS-раннер, необходимый для сборки под iOS
+    runs-on: macos-latest # Используем macOS-раннер, необходимый для сборки под iOS
 
     steps:
     - name: Checkout Code
