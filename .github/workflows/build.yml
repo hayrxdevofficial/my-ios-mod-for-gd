@@ -1,4 +1,4 @@
-name: Build Custom IPA
+name: Build Custom IPA (Linux Fast)
 
 on:
   push:
@@ -8,63 +8,63 @@ on:
 jobs:
   build:
     name: Build and Package IPA
-    runs-on: macos-latest
+    runs-on: ubuntu-latest # ИСПОЛЬЗУЕМ LINUX (мгновенный запуск)
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    # 1. Устанавливаем зависимости
     - name: Install Dependencies
       run: |
-        brew install ldid xz make
+        sudo apt-get update
+        sudo apt-get install -y git make clang ldid xz-utils zip unzip curl python3-pip
+        pip3 install lief # Библиотека для внедрения dylib на Linux
 
-    # 2. Вручную клонируем Theos
     - name: Clone Theos
       run: |
         export THEOS=$HOME/theos
         git clone --recursive https://github.com/theos/theos.git $THEOS
         echo "THEOS=$THEOS" >> $GITHUB_ENV
 
-    # 3. Скачиваем и распаковываем SDK в формате tar.xz (исправляет ошибку симлинков)
     - name: Download and Extract SDKs
       run: |
         mkdir -p $THEOS/sdks
-        # Скачиваем официальный SDK в формате tar.xz
         curl -L -o iPhoneOS.sdk.tar.xz https://github.com/theos/sdks/releases/latest/download/iPhoneOS16.5.sdk.tar.xz
-        # Распаковываем архив tar.xz напрямую в папку sdks
         tar -xf iPhoneOS.sdk.tar.xz -C $THEOS/sdks
-        # Убедимся, что права доступа корректны (на всякий случай)
-        chmod -R 755 $THEOS/sdks
 
-    # 4. Компилируем ваш твик
     - name: Compile Tweak
       run: |
         make clean
         make package FINALPACKAGE=1
 
-    # 5. Внедряем dylib в игру и упаковываем IPA
     - name: Extract and Inject Dylib
       run: |
         mkdir extracted
-        # Используем unzip для распаковки самой игры (это должно работать, так как игра не содержит проблемных симлинков)
         unzip app.ipa -d extracted
         
+        # Находим наш скомпилированный dylib
         DYLIB_PATH=$(find .theos/obj -name "*.dylib" | head -n 1)
         echo "Найден dylib: $DYLIB_PATH"
         
+        # Копируем его в игру
         cp "$DYLIB_PATH" "extracted/Payload/GeometryDash.app/MyHack.dylib"
         
-        git clone https://github.com/Tyilo/insert_dylib.git
-        cd insert_dylib
-        xcodebuild -project insert_dylib.xcodeproj -configuration Release
-        cd ..
-        ./insert_dylib/build/Release/insert_dylib @executable_path/MyHack.dylib "extracted/Payload/GeometryDash.app/GeometryDash" --strip-codesig --inplace
+        # Внедряем зависимость от dylib с помощью Python-библиотеки LIEF
+        python3 -c "
+        import lief
+        binary_path = 'extracted/Payload/GeometryDash.app/GeometryDash'
+        dylib_path = '@executable_path/MyHack.dylib'
+        print(f'Анализ бинарника: {binary_path}')
+        binary = lief.parse(binary_path)
+        binary.add_library(dylib_path)
+        binary.write(binary_path)
+        print('Dylib успешно внедрен в бинарник игры!')
+        "
 
     - name: Package IPA
       run: |
         cd extracted
-        # ВАЖНО: используем флаг -y, чтобы сохранить симлинки при упаковке
+        # Упаковываем обратно в ipa (флаг -y сохраняет симлинки)
         zip -ry ../HackedGeometryDash.ipa Payload/
         echo "IPA-файл создан!"
 
