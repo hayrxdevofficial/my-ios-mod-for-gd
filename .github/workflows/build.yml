@@ -3,56 +3,68 @@ name: Build Custom IPA
 on:
   push:
     branches: [ main ]
-  workflow_dispatch: # Позволяет запускать сборку вручную
+  workflow_dispatch:
 
 jobs:
   build:
     name: Build and Package IPA
-    runs-on: macos-latest # Используем macOS-раннер, необходимый для сборки под iOS
+    runs-on: macos-latest
 
     steps:
     - name: Checkout Code
       uses: actions/checkout@v4
 
-    - name: Set up Theos
-      uses: Randomblock1/theos-action@v1
-
+    # 1. Устанавливаем зависимости
     - name: Install Dependencies
       run: |
         brew install ldid xz make
 
+    # 2. Вручную клонируем Theos в домашнюю директорию
+    - name: Clone Theos
+      run: |
+        export THEOS=$HOME/theos
+        git clone --recursive https://github.com/theos/theos.git $THEOS
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
+
+    # 3. Вручную скачиваем и распаковываем SDK с правильными правами
+    - name: Download and Extract SDKs
+      run: |
+        # Создаем директорию для SDK
+        mkdir -p $THEOS/sdks
+        # Скачиваем архив с SDK
+        curl -L -o sdks.zip https://github.com/theos/sdks/archive/refs/heads/master.zip
+        # Распаковываем во временную папку
+        unzip -q sdks.zip -d sdks_temp
+        # Перемещаем содержимое в директорию Theos
+        mv sdks_temp/sdks-master/* $THEOS/sdks/
+        # Даем полные права на директорию с SDK
+        chmod -R 755 $THEOS/sdks
+
+    # 4. Компилируем ваш твик
     - name: Compile Tweak
       run: |
-        # Собираем твик в виде .dylib
         make clean
         make package FINALPACKAGE=1
 
+    # 5. Внедряем dylib в игру и упаковываем IPA
     - name: Extract and Inject Dylib
       run: |
-        # 1. Распаковываем оригинальный IPA
         mkdir extracted
         unzip app.ipa -d extracted
         
-        # 2. Находим скомпилированный .dylib файл
         DYLIB_PATH=$(find .theos/obj -name "*.dylib" | head -n 1)
         echo "Найден dylib: $DYLIB_PATH"
         
-        # 3. Копируем его внутрь приложения
         cp "$DYLIB_PATH" "extracted/Payload/GeometryDash.app/MyHack.dylib"
         
-        # 4. Внедряем зависимость от нашей библиотеки в основной бинарник игры
-        # Скачиваем утилиту insert_dylib
         git clone https://github.com/Tyilo/insert_dylib.git
         cd insert_dylib
-        # Собираем утилиту
         xcodebuild -project insert_dylib.xcodeproj -configuration Release
         cd ..
-        # Внедряем
         ./insert_dylib/build/Release/insert_dylib @executable_path/MyHack.dylib "extracted/Payload/GeometryDash.app/GeometryDash" --strip-codesig --inplace
 
     - name: Package IPA
       run: |
-        # Запаковываем модифицированное приложение обратно в .ipa
         cd extracted
         zip -r ../HackedGeometryDash.ipa Payload/
         echo "IPA-файл создан!"
