@@ -8,7 +8,7 @@
 static BOOL gNoclipEnabled = NO;
 
 // ============================================================
-// БЕЗОПАСНОЕ ПОЛУЧЕНИЕ TOP VIEW CONTROLLER (без deprecation)
+// БЕЗОПАСНОЕ ПОЛУЧЕНИЕ TOP VIEW CONTROLLER
 // ============================================================
 static UIViewController *GDTopViewController(void) {
     UIWindow *keyWin = nil;
@@ -64,7 +64,6 @@ static UIViewController *GDTopViewController(void) {
                                              style:UIAlertActionStyleCancel
                                            handler:nil]];
 
-    // Поддержка iPad (popover)
     menu.popoverPresentationController.sourceView = vc.view;
     menu.popoverPresentationController.sourceRect =
         CGRectMake(vc.view.bounds.size.width / 2, vc.view.bounds.size.height / 2, 1, 1);
@@ -77,13 +76,11 @@ static UIViewController *GDTopViewController(void) {
     Class cls = NSClassFromString(@"GameStatsManager");
     if (!cls) return;
 
-    // Вызываем sharedState через objc_msgSend (компилятор не знает этот класс)
     SEL sharedSel = NSSelectorFromString(@"sharedState");
     if (![cls respondsToSelector:sharedSel]) return;
     id mgr = ((id (*)(id, SEL))objc_msgSend)(cls, sharedSel);
     if (!mgr) return;
 
-    // Пробуем известные названия методов — какое-то сработает
     NSArray *methodNames = @[@"unlockAllIcons", @"unlockAll", @"unlockAllIconsAndColors"];
     BOOL called = NO;
     for (NSString *m in methodNames) {
@@ -95,13 +92,11 @@ static UIViewController *GDTopViewController(void) {
         }
     }
 
-    // Сохраняем прогресс
     SEL saveSel = NSSelectorFromString(@"save");
     if ([mgr respondsToSelector:saveSel]) {
         ((void (*)(id, SEL))objc_msgSend)(mgr, saveSel);
     }
 
-    // Уведомление пользователю
     dispatch_async(dispatch_get_main_queue(), ^{
         UIViewController *vc = GDTopViewController();
         UIAlertController *a = [UIAlertController alertControllerWithTitle:@"Icons"
@@ -139,7 +134,7 @@ static UIViewController *GDTopViewController(void) {
         dispatch_async(dispatch_get_main_queue(), ^{
             UIViewController *vc = GDTopViewController();
             if (!vc) return;
-            if ([vc.view viewWithTag:99887766]) return; // защита от дублей
+            if ([vc.view viewWithTag:99887766]) return;
 
             UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
             b.tag = 99887766;
