@@ -73,47 +73,54 @@ jobs:
           fi
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-          # 🧹 Чистим артефакты Geode-инъекции
           rm -f "$APP_PATH"/Geode.tmp*
           rm -f "$APP_PATH/CMakeLists.txt"
           echo "🧹 Убраны артефакты Geode/CMake"
 
-          # 1. Пробуем CFBundleExecutable из Info.plist
           EXE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist" 2>/dev/null || true)
           echo "📄 CFBundleExecutable: '$EXE_NAME'"
 
           EXE_PATH=""
+
+          # 1. По Info.plist
           if [ -n "$EXE_NAME" ] && [ -f "$APP_PATH/$EXE_NAME" ]; then
             EXE_PATH="$APP_PATH/$EXE_NAME"
             echo "✅ Взят из Info.plist"
           fi
 
-          # 2. Fallback: сканируем все файлы в корне .app
+          # 2. Явно ищем GeometryJump / GeometryOriginal
           if [ -z "$EXE_PATH" ]; then
-            echo "⚠️ CFBundleExecutable невалиден, ищем Mach-O executable..."
-            for f in "$APP_PATH"/*; do
-              if [ -f "$f" ]; then
-                ftype=$(file -b "$f" 2>/dev/null || echo "")
-                case "$ftype" in
-                  *Mach-O*executable*)
-                    echo "  🔍 Кандидат: $(basename "$f") → $ftype"
-                    if [ -z "$EXE_PATH" ]; then
-                      EXE_PATH="$f"
-                    fi
-                    ;;
-                esac
+            for candidate in GeometryJump GeometryOriginal; do
+              if [ -f "$APP_PATH/$candidate" ]; then
+                EXE_PATH="$APP_PATH/$candidate"
+                echo "✅ Найден по имени: $candidate"
+                break
               fi
             done
           fi
 
+          # 3. Сканируем все файлы в корне и выводим типы
+          if [ -z "$EXE_PATH" ]; then
+            echo "⚠️ Стандартные имена не найдены. Полный список файлов в корне .app:"
+            for f in "$APP_PATH"/*; do
+              if [ -f "$f" ]; then
+                printf "  %-40s → %s\n" "$(basename "$f")" "$(file -b "$f" 2>/dev/null || echo 'unknown')"
+              fi
+            done
+
+            # 4. Пытаемся найти любой Mach-O, исключая dylib/tmp/plist/txt
+            echo "🔎 Поиск любого Mach-O (кроме dylib/tmp/plist/txt)..."
+            EXE_PATH=$(find "$APP_PATH" -maxdepth 1 -type f \
+              ! -name "*.dylib" ! -name "*.tmp*" ! -name "*.plist" ! -name "*.txt" \
+              -exec sh -c 'file -b "$1" | grep -qi "Mach-O" && echo "$1"' _ {} \; \
+              | head -1)
+          fi
+
           if [ -z "$EXE_PATH" ] || [ ! -f "$EXE_PATH" ]; then
             echo "❌ Исполняемый файл не найден"
-            echo "=== Содержимое .app ==="
-            find "$APP_PATH" -maxdepth 1 -type f | head -50
             exit 1
           fi
 
-          # 3. Если Info.plist указывает на несуществующий файл — исправляем
           NEW_EXE_NAME=$(basename "$EXE_PATH")
           if [ "$EXE_NAME" != "$NEW_EXE_NAME" ]; then
             echo "🔧 Исправляем CFBundleExecutable: '$EXE_NAME' → '$NEW_EXE_NAME'"
