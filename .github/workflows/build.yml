@@ -1,112 +1,119 @@
 name: Build and Inject iOS Mod
 
 on:
-  workflow_dispatch:  # Ручной запуск
+  workflow_dispatch:
   push:
-    branches: [ main ]  # Автозапуск при пуше в main
+    branches: [ main ]
 
 jobs:
   build:
-    runs-on: macos-latest  # Theos-action требует macOS или Linux
+    runs-on: macos-latest
     steps:
-      # ------------------------------------------------------------
-      # Шаг 1: Получаем код из репозитория
-      # ------------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # Шаг 2: Настраиваем Theos (сборка .dylib)
-      # ------------------------------------------------------------
       - name: Setup Theos
         uses: Randomblock1/theos-action@v1
 
-      # ------------------------------------------------------------
-      # Шаг 3: Собираем .dylib из нашего Tweak.xm
-      # ------------------------------------------------------------
       - name: Build Tweak
         run: |
           make clean
           make package FINALPACKAGE=1
-          # Ищем собранный .dylib в стандартной папке Theos
-          find .theos -name "*.dylib" -print
-          echo "DYLIB_PATH=$(find .theos -name '*.dylib' | head -1)" >> $GITHUB_ENV
+          DYLIB=$(find .theos -name "*.dylib" | head -1)
+          if [ -z "$DYLIB" ]; then
+            echo "❌ .dylib не найден после сборки"
+            exit 1
+          fi
+          echo "✅ Собран: $DYLIB"
+          echo "DYLIB_PATH=$DYLIB" >> "$GITHUB_ENV"
 
-      # ------------------------------------------------------------
-      # Шаг 4: Скачиваем игру (ZIP) по вашей ссылке
-      # ------------------------------------------------------------
       - name: Download Game Archive
         run: |
           curl -L -o game.zip "https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
           ls -lh game.zip
 
-      # ------------------------------------------------------------
-      # Шаг 5: Распаковываем архив (адаптивно: ZIP или IPA)
-      # ------------------------------------------------------------
       - name: Unpack Game Archive
         run: |
           mkdir -p extracted
-          if [[ "game.zip" == *.zip ]]; then
-            unzip -o game.zip -d extracted
-          fi
-          # Ищем вложенные ZIP/IPA и распаковываем их тоже
+          unzip -o game.zip -d extracted
           find extracted -type f \( -name "*.zip" -o -name "*.ipa" \) | while read -r nested; do
             echo "Unpacking nested: $nested"
             unzip -o "$nested" -d "${nested}_extracted"
           done
-          # Показываем структуру для отладки
-          find extracted -print | head -50
+          echo "=== Структура после распаковки ==="
+          find extracted -maxdepth 4 -print | head -80
 
-      # ------------------------------------------------------------
-      # Шаг 6: Находим .app и исполняемый файл
-      # ------------------------------------------------------------
       - name: Locate .app Bundle and Executable
-        id: find_app
         run: |
           APP_PATH=$(find extracted -type d -name "*.app" | head -1)
           if [ -z "$APP_PATH" ]; then
-            echo "❌ .app не найден!"
+            echo "❌ .app не найден"
             exit 1
           fi
           EXE_NAME=$(basename "$APP_PATH" .app)
           EXE_PATH="$APP_PATH/$EXE_NAME"
-          echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
-          echo "EXE_PATH=$EXE_PATH" >> $GITHUB_ENV
+          if [ ! -f "$EXE_PATH" ]; then
+            echo "❌ Исполняемый файл не найден: $EXE_PATH"
+            ls -la "$APP_PATH"
+            exit 1
+          fi
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+          echo "EXE_PATH=$EXE_PATH" >> "$GITHUB_ENV"
           echo "✅ .app: $APP_PATH"
           echo "✅ Executable: $EXE_PATH"
           file "$EXE_PATH"
 
-      # ------------------------------------------------------------
-      # Шаг 7: Копируем .dylib внутрь .app
-      # ------------------------------------------------------------
       - name: Copy Dylib into App Bundle
         run: |
-          if [ -z "$DYLIB_PATH" ]; then
-            echo "❌ DYLIB_PATH не установлен!"
-            exit 1
-          fi
-          echo "Копируем $DYLIB_PATH в $APP_PATH/"
+          DYLIB_NAME=$(basename "$DYLIB_PATH")
+          echo "DYLIB_NAME=$DYLIB_NAME" >> "$GITHUB_ENV"
           cp "$DYLIB_PATH" "$APP_PATH/"
           ls -la "$APP_PATH"/*.dylib
 
-      # ------------------------------------------------------------
-      # Шаг 8: Внедряем .dylib в бинарник (LC_LOAD_DYLIB)
-      # ------------------------------------------------------------
       - name: Inject Dylib into Binary
         run: |
-          DYLIB_NAME=$(basename "$DYLIB_PATH")
-          echo "Внедряем @executable_path/$DYLIB_NAME в $EXE_PATH"
           pip3 install lief
           python3 - <<'PY'
-import lief
 import os
+import lief
 
-exe_path = os.environ['EXE_PATH']
-dylib_name = os.environ['DYLIB_NAME']
+exe_path = os.environ["EXE_PATH"]
+dylib_name = os.environ["DYLIB_NAME"]
+lib_path = f"@executable_path/{dylib_name}"
 
 binary = lief.parse(exe_path)
-binary.add_library(f'@executable_path/{dylib_name}')
+if binary is None:
+    raise SystemExit(f"Не удалось разобрать Mach-O: {exe_path}")
+
+binary.add_library(lib_path)
 binary.write(exe_path)
-print('✅ Библиотека внедрена')
+print(f"✅ Внедрено: {lib_path}")
 PY
-          otool -L "$EXE_PATH" | grep -i "$DYLIB_NAME" || echo "⚠️ Проверка не удалась, но пробуем продолжить"
+          echo "=== Проверка команд загрузки ==="
+          otool -L "$EXE_PATH" | grep -i "$DYLIB_NAME" || echo "⚠️ grep не нашёл, но продолжаем"
+
+      - name: Fix Info.plist
+        run: |
+          PLIST="$APP_PATH/Info.plist"
+          if [ -f "$PLIST" ]; then
+            /usr/libexec/PlistBuddy -c "Delete :CFBundleSupportedPlatforms" "$PLIST" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Delete :MinimumOSVersion" "$PLIST" 2>/dev/null || true
+            echo "✅ Info.plist обработан"
+          else
+            echo "⚠️ Info.plist не найден"
+          fi
+
+      - name: Create Final IPA
+        run: |
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+          zip -r MyModdedGame.ipa Payload/
+          ls -lh MyModdedGame.ipa
+
+      - name: Upload Final IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MyModdedGame-ipa
+          path: MyModdedGame.ipa
+          if-no-files-found: error
