@@ -26,45 +26,53 @@ jobs:
           echo "Downloading from: $URL"
           curl -L -o "MyApp_2.zip" "$URL"
 
-      - name: First Unpack (MyApp.2.zip)
+      - name: Unpack Source Archive (Adaptive)
         run: |
-          unzip -q MyApp_2.zip -d first_unpack/
-          echo "=== Content of first unpack ==="
-          ls -l first_unpack/
+          mkdir -p unpacked
+          unzip -q MyApp_2.zip -d unpacked/
+          echo "=== Content of unpacked archive ==="
+          ls -l unpacked/
 
-      - name: Second Unpack (MyApp.zip)
+      - name: Locate Game .app Bundle
+        id: locate_app
         run: |
-          ZIP_INSIDE=$(find first_unpack/ -name "MyApp.zip" | head -n 1)
-          if [ -z "$ZIP_INSIDE" ]; then
-            echo "Error: MyApp.zip not found inside the first archive!"
+          # 1. Ищем .app бандл напрямую (на случай, если архив — это уже IPA)
+          APP_PATH=$(find unpacked/ -type d -name "*.app" | head -n 1)
+
+          # 2. Если .app не найден, ищем вложенный zip (старая структура)
+          if [ -z "$APP_PATH" ]; then
+            echo "No .app found directly, looking for nested zip..."
+            NESTED_ZIP=$(find unpacked/ -name "*.zip" | head -n 1)
+            if [ -n "$NESTED_ZIP" ]; then
+              mkdir -p nested/
+              unzip -q "$NESTED_ZIP" -d nested/
+              APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
+            fi
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find any .app bundle in the downloaded archive!"
             exit 1
           fi
-          unzip -q "$ZIP_INSIDE" -d second_unpack/
-          echo "=== Content of second unpack ==="
-          ls -l second_unpack/
+
+          echo "Found .app bundle at: $APP_PATH"
+          echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
 
       - name: Create Structure and Inject Geode.ios.dylib
         run: |
           mkdir -p ipa_structure/Payload
-          
-          APP_FOLDER=$(find second_unpack/ -type d -name "com.robtop.geometryjump.app" | head -n 1)
-          if [ -z "$APP_FOLDER" ]; then
-            echo "Error: com.robtop.geometryjump.app folder not found!"
-            exit 1
-          fi
-          
-          cp -r "$APP_FOLDER" ipa_structure/Payload/GeometryDash.app
-          
+          cp -r "${{ steps.locate_app.outputs.app_path }}" ipa_structure/Payload/GeometryDash.app
+
           if [ -f "Geode.ios.dylib" ]; then
             cp Geode.ios.dylib ipa_structure/Payload/GeometryDash.app/
           else
             echo "Error: Geode.ios.dylib not found in repository root!"
             exit 1
           fi
-          
+
           TARGET_BINARY=$(find ipa_structure/Payload/GeometryDash.app/ -maxdepth 1 -type f -executable | head -n 1)
           echo "Target binary found: $TARGET_BINARY"
-          
+
           python -c "
           import lief
           binary = lief.parse('$TARGET_BINARY')
