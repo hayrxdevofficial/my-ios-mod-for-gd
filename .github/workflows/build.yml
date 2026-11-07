@@ -73,36 +73,52 @@ jobs:
           fi
           echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
 
-          # 🧹 Чистим мусор от прошлых инъекций ДО поиска бинарника
+          # 🧹 Чистим артефакты Geode-инъекции
           rm -f "$APP_PATH"/Geode.tmp*
           rm -f "$APP_PATH/CMakeLists.txt"
-          echo "🧹 Убраны старые артефакты Geode/CMake"
+          echo "🧹 Убраны артефакты Geode/CMake"
 
-          # 1. Пытаемся получить имя исполняемого файла из Info.plist
+          # 1. Пробуем CFBundleExecutable из Info.plist
           EXE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist" 2>/dev/null || true)
           echo "📄 CFBundleExecutable: '$EXE_NAME'"
 
           EXE_PATH=""
           if [ -n "$EXE_NAME" ] && [ -f "$APP_PATH/$EXE_NAME" ]; then
             EXE_PATH="$APP_PATH/$EXE_NAME"
+            echo "✅ Взят из Info.plist"
           fi
 
-          # 2. Fallback: ищем именно Mach-O executable (не dylib, не tmp, не plist)
+          # 2. Fallback: сканируем все файлы в корне .app
           if [ -z "$EXE_PATH" ]; then
-            echo "⚠️ CFBundleExecutable не сработал, ищем Mach-O executable..."
-            EXE_PATH=$(find "$APP_PATH" -maxdepth 1 -type f \
-              ! -name "*.dylib" \
-              ! -name "*.tmp*" \
-              ! -name "*.plist" \
-              ! -name "*.txt" \
-              -exec file {} \; \
-              | grep -iE "mach-o.*executable" | head -1 | cut -d: -f1)
+            echo "⚠️ CFBundleExecutable невалиден, ищем Mach-O executable..."
+            for f in "$APP_PATH"/*; do
+              if [ -f "$f" ]; then
+                ftype=$(file -b "$f" 2>/dev/null || echo "")
+                case "$ftype" in
+                  *Mach-O*executable*)
+                    echo "  🔍 Кандидат: $(basename "$f") → $ftype"
+                    if [ -z "$EXE_PATH" ]; then
+                      EXE_PATH="$f"
+                    fi
+                    ;;
+                esac
+              fi
+            done
           fi
 
           if [ -z "$EXE_PATH" ] || [ ! -f "$EXE_PATH" ]; then
             echo "❌ Исполняемый файл не найден"
-            ls -la "$APP_PATH" | head -30
+            echo "=== Содержимое .app ==="
+            find "$APP_PATH" -maxdepth 1 -type f | head -50
             exit 1
+          fi
+
+          # 3. Если Info.plist указывает на несуществующий файл — исправляем
+          NEW_EXE_NAME=$(basename "$EXE_PATH")
+          if [ "$EXE_NAME" != "$NEW_EXE_NAME" ]; then
+            echo "🔧 Исправляем CFBundleExecutable: '$EXE_NAME' → '$NEW_EXE_NAME'"
+            /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $NEW_EXE_NAME" "$APP_PATH/Info.plist" 2>/dev/null || \
+              /usr/libexec/PlistBuddy -c "Add :CFBundleExecutable string $NEW_EXE_NAME" "$APP_PATH/Info.plist"
           fi
 
           echo "EXE_PATH=$EXE_PATH" >> "$GITHUB_ENV"
