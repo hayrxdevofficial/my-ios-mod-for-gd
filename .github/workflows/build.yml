@@ -12,29 +12,20 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      # ------------------------------------------------------------
-      # Установка Theos и SDK вручную (вместо theos-action)
-      # ------------------------------------------------------------
       - name: Install Theos and SDKs
         run: |
           set -e
-
-          # 1. Устанавливаем зависимости: ldid, make и p7zip для распаковки SDK
           brew install ldid make p7zip
-
-          # 2. Добавляем GNU make в PATH (Homebrew ставит его как gmake)
           echo "/opt/homebrew/opt/make/libexec/gnubin" >> "$GITHUB_PATH"
 
-          # 3. Клонируем Theos, если его ещё нет
           export THEOS="$GITHUB_WORKSPACE/theos"
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
           if [ ! -d "$THEOS" ]; then
             git clone --recursive https://github.com/theos/theos.git "$THEOS"
           fi
 
-          # 4. Скачиваем и распаковываем SDK через 7z (обходим ошибку symlink)
           mkdir -p "$THEOS/sdks"
-          if [ -z "$(ls -A "$THEOS/sdks")" ]; then
+          if [ -z "$(ls -A "$THEOS/sdks" | grep -v '.keep')" ]; then
             cd "$THEOS/sdks"
             curl -L -o master.zip "https://github.com/theos/sdks/archive/refs/heads/master.zip"
             7z x master.zip -o./tmp
@@ -45,9 +36,6 @@ jobs:
           echo "✅ Theos и SDK установлены"
           ls -la "$THEOS/sdks" | head
 
-      # ------------------------------------------------------------
-      # Сборка .dylib
-      # ------------------------------------------------------------
       - name: Build Tweak
         run: |
           make clean
@@ -60,10 +48,6 @@ jobs:
           echo "✅ Собран: $DYLIB"
           echo "DYLIB_PATH=$DYLIB" >> "$GITHUB_ENV"
 
-      # ------------------------------------------------------------
-      # Далее — скачивание игры, распаковка, поиск .app, внедрение и упаковка IPA
-      # (эти шаги остаются без изменений)
-      # ------------------------------------------------------------
       - name: Download Game Archive
         run: |
           curl -L -o game.zip "https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
