@@ -107,21 +107,6 @@ jobs:
             done
           fi
 
-          if [ -z "$EXE_PATH" ]; then
-            echo "⚠️ Стандартные имена не найдены. Полный список файлов в корне .app:"
-            for f in "$APP_PATH"/*; do
-              if [ -f "$f" ]; then
-                printf "  %-40s → %s\n" "$(basename "$f")" "$(file -b "$f" 2>/dev/null || echo 'unknown')"
-              fi
-            done
-
-            echo "🔎 Поиск любого Mach-O (кроме dylib/tmp/plist/txt)..."
-            EXE_PATH=$(find "$APP_PATH" -maxdepth 1 -type f \
-              ! -name "*.dylib" ! -name "*.tmp*" ! -name "*.plist" ! -name "*.txt" \
-              -exec sh -c 'file -b "$1" | grep -qi "Mach-O" && echo "$1"' _ {} \; \
-              | head -1)
-          fi
-
           if [ -z "$EXE_PATH" ] || [ ! -f "$EXE_PATH" ]; then
             echo "❌ Исполняемый файл не найден"
             exit 1
@@ -172,6 +157,16 @@ jobs:
           echo "=== Проверка команд загрузки ==="
           otool -L "$EXE_PATH" | grep -i "$DYLIB_NAME" || echo "⚠️ grep не нашёл, но продолжаем"
 
+      # 🔽 НОВЫЙ ШАГ: Подмена версии SDK в бинарнике игры 🔽
+      - name: Patch Mach-O SDK Version
+        run: |
+          echo "🩹 Меняем версию SDK в заголовке бинарника на 16.5..."
+          # vtool -set-build-version <platform> <minos> <sdk> -replace
+          vtool -set-build-version ios 16.0 16.5 -replace -output "$EXE_PATH.tmp" "$EXE_PATH"
+          mv "$EXE_PATH.tmp" "$EXE_PATH"
+          echo "✅ Проверка версии SDK:"
+          vtool -show-build "$EXE_PATH"
+
       - name: Fix Info.plist
         run: |
           PLIST="$APP_PATH/Info.plist"
@@ -190,13 +185,9 @@ jobs:
             echo "🔓 Удаляем ограничение UISupportedDevices..."
             /usr/libexec/PlistBuddy -c "Delete :UISupportedDevices" "$PLIST" 2>/dev/null || true
             if /usr/libexec/PlistBuddy -c "Print :UISupportedDevices" "$PLIST" >/dev/null 2>&1; then
-              echo "⚠️ Ключ всё ещё на месте, пробуем принудительно..."
               /usr/libexec/PlistBuddy -c "Delete :UISupportedDevices" "$PLIST" || true
-            else
-              echo "✅ UISupportedDevices удалён (или его не было)"
             fi
-          else
-            echo "⚠️ Info.plist не найден, пропускаем"
+            echo "✅ UISupportedDevices удалён (или его не было)"
           fi
 
       - name: Re-sign with DER Entitlements
