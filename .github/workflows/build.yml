@@ -173,15 +173,12 @@ jobs:
             echo "⚠️ Info.plist не найден"
           fi
 
-      # 🔽 НОВЫЙ ШАГ: Удаление ограничения по моделям устройств 🔽
       - name: Remove Device Restrictions (UISupportedDevices)
         run: |
           PLIST="$APP_PATH/Info.plist"
           if [ -f "$PLIST" ]; then
             echo "🔓 Удаляем ограничение UISupportedDevices..."
-            # Пытаемся удалить ключ, игнорируя ошибку, если его нет
             /usr/libexec/PlistBuddy -c "Delete :UISupportedDevices" "$PLIST" 2>/dev/null || true
-            # Проверяем, остался ли он
             if /usr/libexec/PlistBuddy -c "Print :UISupportedDevices" "$PLIST" >/dev/null 2>&1; then
               echo "⚠️ Ключ всё ещё на месте, пробуем принудительно..."
               /usr/libexec/PlistBuddy -c "Delete :UISupportedDevices" "$PLIST" || true
@@ -191,6 +188,24 @@ jobs:
           else
             echo "⚠️ Info.plist не найден, пропускаем"
           fi
+
+      # 🔽 НОВЫЙ ШАГ: Переподпись с DER entitlements 🔽
+      - name: Re-sign with DER Entitlements
+        run: |
+          echo "🔏 Переподписываем приложение с DER entitlements..."
+          # Переподписываем все вложенные фреймворки и плагины
+          find "$APP_PATH" -name "*.framework" -o -name "*.dylib" -o -name "*.appex" | while read -r nested; do
+            if [ -e "$nested" ]; then
+              echo "  Подписываем: $nested"
+              codesign -f -s - --generate-entitlement-der "$nested" 2>/dev/null || true
+            fi
+          done
+          # Переподписываем основной .app bundle
+          echo "  Подписываем: $APP_PATH"
+          codesign -f -s - --generate-entitlement-der "$APP_PATH"
+          # Проверяем версию CodeDirectory
+          echo "=== Проверка подписи ==="
+          codesign -dv "$APP_PATH" 2>&1 | grep -E "CodeDirectory|Signature" || true
 
       - name: Create Final IPA
         run: |
