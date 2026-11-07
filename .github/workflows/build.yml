@@ -82,13 +82,11 @@ jobs:
 
           EXE_PATH=""
 
-          # 1. По Info.plist
           if [ -n "$EXE_NAME" ] && [ -f "$APP_PATH/$EXE_NAME" ]; then
             EXE_PATH="$APP_PATH/$EXE_NAME"
             echo "✅ Взят из Info.plist"
           fi
 
-          # 2. Явно ищем GeometryJump / GeometryOriginal
           if [ -z "$EXE_PATH" ]; then
             for candidate in GeometryJump GeometryOriginal; do
               if [ -f "$APP_PATH/$candidate" ]; then
@@ -99,7 +97,6 @@ jobs:
             done
           fi
 
-          # 3. Сканируем все файлы в корне и выводим типы
           if [ -z "$EXE_PATH" ]; then
             echo "⚠️ Стандартные имена не найдены. Полный список файлов в корне .app:"
             for f in "$APP_PATH"/*; do
@@ -108,7 +105,6 @@ jobs:
               fi
             done
 
-            # 4. Пытаемся найти любой Mach-O, исключая dylib/tmp/plist/txt
             echo "🔎 Поиск любого Mach-O (кроме dylib/tmp/plist/txt)..."
             EXE_PATH=$(find "$APP_PATH" -maxdepth 1 -type f \
               ! -name "*.dylib" ! -name "*.tmp*" ! -name "*.plist" ! -name "*.txt" \
@@ -175,6 +171,25 @@ jobs:
             echo "✅ Info.plist обработан"
           else
             echo "⚠️ Info.plist не найден"
+          fi
+
+      # 🔽 НОВЫЙ ШАГ: Удаление ограничения по моделям устройств 🔽
+      - name: Remove Device Restrictions (UISupportedDevices)
+        run: |
+          PLIST="$APP_PATH/Info.plist"
+          if [ -f "$PLIST" ]; then
+            echo "🔓 Удаляем ограничение UISupportedDevices..."
+            # Пытаемся удалить ключ, игнорируя ошибку, если его нет
+            /usr/libexec/PlistBuddy -c "Delete :UISupportedDevices" "$PLIST" 2>/dev/null || true
+            # Проверяем, остался ли он
+            if /usr/libexec/PlistBuddy -c "Print :UISupportedDevices" "$PLIST" >/dev/null 2>&1; then
+              echo "⚠️ Ключ всё ещё на месте, пробуем принудительно..."
+              /usr/libexec/PlistBuddy -c "Delete :UISupportedDevices" "$PLIST" || true
+            else
+              echo "✅ UISupportedDevices удалён (или его не было)"
+            fi
+          else
+            echo "⚠️ Info.plist не найден, пропускаем"
           fi
 
       - name: Create Final IPA
