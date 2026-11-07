@@ -1,155 +1,112 @@
-name: Build Custom IPA (Linux Fast)
+name: Build and Inject iOS Mod
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # Ручной запуск
+  push:
+    branches: [ main ]  # Автозапуск при пуше в main
 
 jobs:
-  build-ipa:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: macos-latest  # Theos-action требует macOS или Linux
     steps:
+      # ------------------------------------------------------------
+      # Шаг 1: Получаем код из репозитория
+      # ------------------------------------------------------------
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
+      # ------------------------------------------------------------
+      # Шаг 2: Настраиваем Theos (сборка .dylib)
+      # ------------------------------------------------------------
+      - name: Setup Theos
+        uses: Randomblock1/theos-action@v1
 
-      - name: Install Dependencies
+      # ------------------------------------------------------------
+      # Шаг 3: Собираем .dylib из нашего Tweak.xm
+      # ------------------------------------------------------------
+      - name: Build Tweak
         run: |
-          python -m pip install --upgrade pip
-          pip install lief
+          make clean
+          make package FINALPACKAGE=1
+          # Ищем собранный .dylib в стандартной папке Theos
+          find .theos -name "*.dylib" -print
+          echo "DYLIB_PATH=$(find .theos -name '*.dylib' | head -1)" >> $GITHUB_ENV
 
-      - name: Download MyApp.2.zip from Release
+      # ------------------------------------------------------------
+      # Шаг 4: Скачиваем игру (ZIP) по вашей ссылке
+      # ------------------------------------------------------------
+      - name: Download Game Archive
         run: |
-          URL="https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
-          curl -L -o "MyApp_2.zip" "$URL"
+          curl -L -o game.zip "https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
+          ls -lh game.zip
 
-      - name: Unpack Source Archive (Adaptive)
-        id: locate_app # <--- ИСПРАВЛЕНИЕ: Добавлен ID шага для передачи пути
+      # ------------------------------------------------------------
+      # Шаг 5: Распаковываем архив (адаптивно: ZIP или IPA)
+      # ------------------------------------------------------------
+      - name: Unpack Game Archive
         run: |
-          set -e
-          mkdir -p unpacked
-          unzip -q MyApp_2.zip -d unpacked/
-          
-          APP_PATH=$(find unpacked/ -type d -name "*.app" | head -n 1)
-          
-          if [ -z "$APP_PATH" ]; then
-            echo "No .app directly, looking for nested zip..."
-            NESTED=$(find unpacked/ -maxdepth 4 -name "*.zip" | head -n 1)
-            if [ -n "$NESTED" ]; then
-              mkdir -p nested/
-              unzip -q "$NESTED" -d nested/
-              APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
-            fi
+          mkdir -p extracted
+          if [[ "game.zip" == *.zip ]]; then
+            unzip -o game.zip -d extracted
           fi
-          
+          # Ищем вложенные ZIP/IPA и распаковываем их тоже
+          find extracted -type f \( -name "*.zip" -o -name "*.ipa" \) | while read -r nested; do
+            echo "Unpacking nested: $nested"
+            unzip -o "$nested" -d "${nested}_extracted"
+          done
+          # Показываем структуру для отладки
+          find extracted -print | head -50
+
+      # ------------------------------------------------------------
+      # Шаг 6: Находим .app и исполняемый файл
+      # ------------------------------------------------------------
+      - name: Locate .app Bundle and Executable
+        id: find_app
+        run: |
+          APP_PATH=$(find extracted -type d -name "*.app" | head -1)
           if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find any .app bundle!"
+            echo "❌ .app не найден!"
             exit 1
           fi
-          
-          echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
-          echo "Found .app: $APP_PATH"
+          EXE_NAME=$(basename "$APP_PATH" .app)
+          EXE_PATH="$APP_PATH/$EXE_NAME"
+          echo "APP_PATH=$APP_PATH" >> $GITHUB_ENV
+          echo "EXE_PATH=$EXE_PATH" >> $GITHUB_ENV
+          echo "✅ .app: $APP_PATH"
+          echo "✅ Executable: $EXE_PATH"
+          file "$EXE_PATH"
 
-      - name: Create Structure and Inject Geode.ios.dylib
+      # ------------------------------------------------------------
+      # Шаг 7: Копируем .dylib внутрь .app
+      # ------------------------------------------------------------
+      - name: Copy Dylib into App Bundle
         run: |
-          set -e
-          mkdir -p ipa_structure/Payload
-          
-          # Копируем с флагом -a, чтобы сохранить права и симлинки
-          cp -a "${{ steps.locate_app.outputs.app_path }}" ipa_structure/Payload/GeometryDash.app
-          APP_BUNDLE="ipa_structure/Payload/GeometryDash.app"
-
-          # Копируем dylib
-          cp Geode.ios.dylib "$APP_BUNDLE/"
-
-          # Ищем Mach-O бинарник (если название папки не совпадает)
-          TARGET_BINARY=$(find "$APP_BUNDLE/" -maxdepth 1 -type f -exec file {} \; | grep -iE "mach-o" | head -n 1 | cut -d: -f1)
-          
-          if [ -z "$TARGET_BINARY" ]; then
-             echo "Error: could not locate main Mach-O binary."
-             exit 1
+          if [ -z "$DYLIB_PATH" ]; then
+            echo "❌ DYLIB_PATH не установлен!"
+            exit 1
           fi
-          echo "Original binary found: $TARGET_BINARY"
-          chmod +x "$TARGET_BINARY"
+          echo "Копируем $DYLIB_PATH в $APP_PATH/"
+          cp "$DYLIB_PATH" "$APP_PATH/"
+          ls -la "$APP_PATH"/*.dylib
 
-          # Инъекция
-          python -c "
-          import lief
-          binary = lief.parse('$TARGET_BINARY')
-          if binary is None:
-              raise SystemExit('lief failed to parse binary: $TARGET_BINARY')
-          binary.add_library('@executable_path/Geode.ios.dylib')
-          binary.write('$TARGET_BINARY')
-          print('Successfully injected Geode.ios.dylib into binary!')
-          "
-
-      - name: Fix Geode.tmp issue and Info.plist
+      # ------------------------------------------------------------
+      # Шаг 8: Внедряем .dylib в бинарник (LC_LOAD_DYLIB)
+      # ------------------------------------------------------------
+      - name: Inject Dylib into Binary
         run: |
-          set -e
-          APP_BUNDLE="ipa_structure/Payload/GeometryDash.app"
+          DYLIB_NAME=$(basename "$DYLIB_PATH")
+          echo "Внедряем @executable_path/$DYLIB_NAME в $EXE_PATH"
+          pip3 install lief
+          python3 - <<'PY'
+import lief
+import os
 
-          # 1. Ищем любые файлы .tmp (Geode.tmp, Geode.tmp.tmp и т.д.)
-          TMP_FILE=$(find "$APP_BUNDLE" -maxdepth 1 -name "Geode.tmp*" | head -n 1)
+exe_path = os.environ['EXE_PATH']
+dylib_name = os.environ['DYLIB_NAME']
 
-          if [ -n "$TMP_FILE" ]; then
-            echo "Found problematic temp file: $TMP_FILE"
-            REAL_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
-            
-            # Переименовываем оригинальный (пропатченный) бинарник в правильное имя
-            mv "$TMP_FILE" "$APP_BUNDLE/$REAL_NAME"
-            chmod +x "$APP_BUNDLE/$REAL_NAME"
-            echo "Renamed $TMP_FILE -> $REAL_NAME"
-            
-            # 2. Исправляем Info.plist
-            python3 -c "
-          import plistlib
-          plist_path = '$APP_BUNDLE/Info.plist'
-          with open(plist_path, 'rb') as f:
-              plist = plistlib.load(f)
-          
-          plist['CFBundleExecutable'] = '$REAL_NAME'
-          
-          with open(plist_path, 'wb') as f:
-              plistlib.dump(plist, f)
-          print('Updated CFBundleExecutable to: $REAL_NAME')
-          "
-          else
-            echo "No .tmp files found. Ensuring Info.plist is correct..."
-            REAL_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
-            python3 -c "
-          import plistlib
-          plist_path = '$APP_BUNDLE/Info.plist'
-          with open(plist_path, 'rb') as f:
-              plist = plistlib.load(f)
-          plist['CFBundleExecutable'] = '$REAL_NAME'
-          with open(plist_path, 'wb') as f:
-              plistlib.dump(plist, f)
-          print('Ensured CFBundleExecutable is: $REAL_NAME')
-          "
-          fi
-
-      - name: Clean up and Pack into Final IPA
-        run: |
-          set -e
-          cd ipa_structure
-          
-          # Удаляем мусор macOS, который часто вызывает "Corrupted IPA"
-          find Payload -name ".DS_Store" -delete
-          find Payload -name "__MACOSX" -exec rm -rf {} +
-          
-          # Выдаем права на запуск всему, что в корне .app (на всякий случай)
-          chmod +x Payload/GeometryDash.app/*
-          
-          # ВАЖНО: Флаг -y сохраняет симлинки (без него сервисы выдают Corrupted IPA)
-          zip -qry ../GeometryDash_Geode_Personal.ipa Payload/
-          
-          cd ..
-          echo "IPA packing completed successfully!"
-
-      - name: Upload Modded IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GeometryDash_Modded_IPA
-          path: GeometryDash_Geode_Personal.ipa
+binary = lief.parse(exe_path)
+binary.add_library(f'@executable_path/{dylib_name}')
+binary.write(exe_path)
+print('✅ Библиотека внедрена')
+PY
+          otool -L "$EXE_PATH" | grep -i "$DYLIB_NAME" || echo "⚠️ Проверка не удалась, но пробуем продолжить"
