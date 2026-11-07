@@ -1,1 +1,89 @@
-# Need MacOs-Latest for 16 iphone versions IOS!
+name: Build Custom IPA (Linux Fast)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ipa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install lief
+
+      - name: Download MyApp.2.zip from Release
+        run: |
+          URL="https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
+          echo "Downloading from: $URL"
+          curl -L -o "MyApp_2.zip" "$URL"
+
+      - name: First Unpack (MyApp.2.zip)
+        run: |
+          unzip -q MyApp_2.zip -d first_unpack/
+          echo "=== Content of first unpack ==="
+          ls -l first_unpack/
+
+      - name: Second Unpack (MyApp.zip)
+        run: |
+          ZIP_INSIDE=$(find first_unpack/ -name "MyApp.zip" | head -n 1)
+          if [ -z "$ZIP_INSIDE" ]; then
+            echo "Error: MyApp.zip not found inside the first archive!"
+            exit 1
+          fi
+          unzip -q "$ZIP_INSIDE" -d second_unpack/
+          echo "=== Content of second unpack ==="
+          ls -l second_unpack/
+
+      - name: Create Structure and Inject Geode.ios.dylib
+        run: |
+          mkdir -p ipa_structure/Payload
+          
+          APP_FOLDER=$(find second_unpack/ -type d -name "com.robtop.geometryjump.app" | head -n 1)
+          if [ -z "$APP_FOLDER" ]; then
+            echo "Error: com.robtop.geometryjump.app folder not found!"
+            exit 1
+          fi
+          
+          cp -r "$APP_FOLDER" ipa_structure/Payload/GeometryDash.app
+          
+          # Копируем ИМЕННО Geode.ios.dylib из корня репозитория
+          if [ -f "Geode.ios.dylib" ]; then
+            cp Geode.ios.dylib ipa_structure/Payload/GeometryDash.app/
+          else
+            echo "Error: Geode.ios.dylib not found in repository root!"
+            exit 1
+          fi
+          
+          TARGET_BINARY=$(find ipa_structure/Payload/GeometryDash.app/ -maxdepth 1 -type f -executable | head -n 1)
+          echo "Target binary found: $TARGET_BINARY"
+          
+          # Инжектим новый файл Geode.ios.dylib через LIEF
+          python -c "
+          import lief
+          binary = lief.parse('$TARGET_BINARY')
+          binary.add_library('@executable_path/Geode.ios.dylib')
+          binary.write('$TARGET_BINARY')
+          print('Successfully injected Geode.ios.dylib into binary!')
+          "
+
+      - name: Pack Everything into Final IPA
+        run: |
+          cd ipa_structure
+          zip -q -r ../GeometryDash_Geode_Personal.ipa Payload/
+          cd ..
+          echo "IPA packing completed successfully!"
+
+      - name: Upload Modded IPA Artifact
+        uses: actions/artifacts@v4
+        with:
+          name: GeometryDash_Modded_IPA
+          path: GeometryDash_Geode_Personal.ipa
