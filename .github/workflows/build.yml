@@ -25,57 +25,100 @@ jobs:
           URL="https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
           echo "Downloading from: $URL"
           curl -L -o "MyApp_2.zip" "$URL"
+          ls -l MyApp_2.zip
 
       - name: Unpack Source Archive (Adaptive)
         run: |
+          set -e
           mkdir -p unpacked
           unzip -q MyApp_2.zip -d unpacked/
           echo "=== Content of unpacked archive ==="
-          ls -l unpacked/
+          ls -la unpacked/
 
       - name: Locate Game .app Bundle
         id: locate_app
         run: |
-          # 1. Ищем .app бандл напрямую (на случай, если архив — это уже IPA)
+          set -e
           APP_PATH=$(find unpacked/ -type d -name "*.app" | head -n 1)
 
-          # 2. Если .app не найден, ищем вложенный zip (старая структура)
           if [ -z "$APP_PATH" ]; then
-            echo "No .app found directly, looking for nested zip..."
-            NESTED_ZIP=$(find unpacked/ -name "*.zip" | head -n 1)
-            if [ -n "$NESTED_ZIP" ]; then
-              mkdir -p nested/
-              unzip -q "$NESTED_ZIP" -d nested/
-              APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
+            echo "No .app directly, looking for nested MyApp.zip (file OR folder)..."
+            NESTED=$(find unpacked/ -maxdepth 4 -name "MyApp.zip" | head -n 1)
+            if [ -z "$NESTED" ]; then
+              NESTED=$(find unpacked/ -maxdepth 4 -name "*.zip" | head -n 1)
+            fi
+
+            if [ -n "$NESTED" ]; then
+              echo "Found nested: $NESTED"
+              if [ -d "$NESTED" ]; then
+                APP_PATH=$(find "$NESTED" -type d -name "*.app" | head -n 1)
+              else
+                mkdir -p nested/
+                unzip -q "$NESTED" -d nested/
+                APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
+              fi
             fi
           fi
 
           if [ -z "$APP_PATH" ]; then
-            echo "Error: Could not find any .app bundle in the downloaded archive!"
+            echo "Error: no .app bundle found. Content tree:"
+            find unpacked/ -maxdepth 5 | head -100
             exit 1
           fi
 
-          echo "Found .app bundle at: $APP_PATH"
+          echo "Found .app: $APP_PATH"
           echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
 
       - name: Create Structure and Inject Geode.ios.dylib
         run: |
+          set -e
           mkdir -p ipa_structure/Payload
-          cp -r "${{ steps.locate_app.outputs.app_path }}" ipa_structure/Payload/GeometryDash.app
+          cp -a "${{ steps.locate_app.outputs.app_path }}" ipa_structure/Payload/GeometryDash.app
 
-          if [ -f "Geode.ios.dylib" ]; then
-            cp Geode.ios.dylib ipa_structure/Payload/GeometryDash.app/
-          else
-            echo "Error: Geode.ios.dylib not found in repository root!"
+          APP_BUNDLE="ipa_structure/Payload/GeometryDash.app"
+
+          BINARY_NAME=$(python3 -c "
+          import plistlib
+          try:
+              with open('$APP_BUNDLE/Info.plist','rb') as f:
+                  print(plistlib.load(f).get('CFBundleExecutable',''))
+          except Exception:
+              print('')
+          ")
+
+          if [ -z "$BINARY_NAME" ]; then
+            BINARY_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
+          fi
+
+          TARGET_BINARY="$APP_BUNDLE/$BINARY_NAME"
+
+          if [ ! -f "$TARGET_BINARY" ]; then
+            echo "Binary '$TARGET_BINARY' not found, scanning for Mach-O..."
+            TARGET_BINARY=$(find "$APP_BUNDLE/" -maxdepth 1 -type f -exec file {} \; \
+              | grep -iE "mach-o" | head -n 1 | cut -d: -f1)
+          fi
+
+          if [ -z "$TARGET_BINARY" ] || [ ! -f "$TARGET_BINARY" ]; then
+            echo "Error: could not locate main Mach-O binary."
+            echo "Contents of $APP_BUNDLE:"
+            ls -la "$APP_BUNDLE/"
             exit 1
           fi
 
-          TARGET_BINARY=$(find ipa_structure/Payload/GeometryDash.app/ -maxdepth 1 -type f -executable | head -n 1)
-          echo "Target binary found: $TARGET_BINARY"
+          echo "Target binary: $TARGET_BINARY"
+          chmod +x "$TARGET_BINARY"
+
+          if [ ! -f "Geode.ios.dylib" ]; then
+            echo "Error: Geode.ios.dylib not found in repository root!"
+            exit 1
+          fi
+          cp Geode.ios.dylib "$APP_BUNDLE/"
 
           python -c "
           import lief
           binary = lief.parse('$TARGET_BINARY')
+          if binary is None:
+              raise SystemExit('lief failed to parse binary: $TARGET_BINARY')
           binary.add_library('@executable_path/Geode.ios.dylib')
           binary.write('$TARGET_BINARY')
           print('Successfully injected Geode.ios.dylib into binary!')
@@ -83,9 +126,11 @@ jobs:
 
       - name: Pack Everything into Final IPA
         run: |
+          set -e
           cd ipa_structure
           zip -q -r ../GeometryDash_Geode_Personal.ipa Payload/
           cd ..
+          ls -lh GeometryDash_Geode_Personal.ipa
           echo "IPA packing completed successfully!"
 
       - name: Upload Modded IPA Artifact
