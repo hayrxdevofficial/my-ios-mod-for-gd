@@ -71,21 +71,32 @@ jobs:
             echo "❌ .app не найден"
             exit 1
           fi
+          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
+
+          # 🧹 Чистим мусор от прошлых инъекций ДО поиска бинарника
+          rm -f "$APP_PATH"/Geode.tmp*
+          rm -f "$APP_PATH/CMakeLists.txt"
+          echo "🧹 Убраны старые артефакты Geode/CMake"
 
           # 1. Пытаемся получить имя исполняемого файла из Info.plist
           EXE_NAME=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP_PATH/Info.plist" 2>/dev/null || true)
-          echo "📄 CFBundleExecutable из Info.plist: '$EXE_NAME'"
+          echo "📄 CFBundleExecutable: '$EXE_NAME'"
 
           EXE_PATH=""
           if [ -n "$EXE_NAME" ] && [ -f "$APP_PATH/$EXE_NAME" ]; then
             EXE_PATH="$APP_PATH/$EXE_NAME"
           fi
 
-          # 2. Fallback: ищем любой Mach-O бинарник в корне .app
+          # 2. Fallback: ищем именно Mach-O executable (не dylib, не tmp, не plist)
           if [ -z "$EXE_PATH" ]; then
-            echo "⚠️ По Info.plist не нашли, ищем Mach-O автоматически..."
-            EXE_PATH=$(find "$APP_PATH" -maxdepth 1 -type f -exec file {} \; \
-              | grep -i "mach-o" | head -1 | cut -d: -f1)
+            echo "⚠️ CFBundleExecutable не сработал, ищем Mach-O executable..."
+            EXE_PATH=$(find "$APP_PATH" -maxdepth 1 -type f \
+              ! -name "*.dylib" \
+              ! -name "*.tmp*" \
+              ! -name "*.plist" \
+              ! -name "*.txt" \
+              -exec file {} \; \
+              | grep -iE "mach-o.*executable" | head -1 | cut -d: -f1)
           fi
 
           if [ -z "$EXE_PATH" ] || [ ! -f "$EXE_PATH" ]; then
@@ -94,18 +105,10 @@ jobs:
             exit 1
           fi
 
-          echo "APP_PATH=$APP_PATH" >> "$GITHUB_ENV"
           echo "EXE_PATH=$EXE_PATH" >> "$GITHUB_ENV"
           echo "✅ .app: $APP_PATH"
           echo "✅ Executable: $EXE_PATH"
           file "$EXE_PATH"
-
-      - name: Clean Previous Injection Artifacts
-        run: |
-          rm -f "$APP_PATH/Geode.tmp.tmp"
-          rm -f "$APP_PATH/Geode.tmp"
-          rm -f "$APP_PATH/CMakeLists.txt"
-          echo "🧹 Убраны старые артефакты Geode/CMake"
 
       - name: Copy Dylib into App Bundle
         run: |
