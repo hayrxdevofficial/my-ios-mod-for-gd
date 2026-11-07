@@ -23,97 +23,51 @@ jobs:
       - name: Download MyApp.2.zip from Release
         run: |
           URL="https://github.com/hayrxdevofficial/my-ios-mod-for-gd/releases/download/Homer/MyApp.2.zip"
-          echo "Downloading from: $URL"
           curl -L -o "MyApp_2.zip" "$URL"
-          ls -l MyApp_2.zip
 
       - name: Unpack Source Archive (Adaptive)
         run: |
           set -e
           mkdir -p unpacked
           unzip -q MyApp_2.zip -d unpacked/
-          echo "=== Content of unpacked archive ==="
-          ls -la unpacked/
-
-      - name: Locate Game .app Bundle
-        id: locate_app
-        run: |
-          set -e
           APP_PATH=$(find unpacked/ -type d -name "*.app" | head -n 1)
-
           if [ -z "$APP_PATH" ]; then
-            echo "No .app directly, looking for nested MyApp.zip (file OR folder)..."
-            NESTED=$(find unpacked/ -maxdepth 4 -name "MyApp.zip" | head -n 1)
-            if [ -z "$NESTED" ]; then
-              NESTED=$(find unpacked/ -maxdepth 4 -name "*.zip" | head -n 1)
-            fi
-
+            NESTED=$(find unpacked/ -maxdepth 4 -name "*.zip" | head -n 1)
             if [ -n "$NESTED" ]; then
-              echo "Found nested: $NESTED"
-              if [ -d "$NESTED" ]; then
-                APP_PATH=$(find "$NESTED" -type d -name "*.app" | head -n 1)
-              else
-                mkdir -p nested/
-                unzip -q "$NESTED" -d nested/
-                APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
-              fi
+              mkdir -p nested/
+              unzip -q "$NESTED" -d nested/
+              APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
             fi
           fi
-
-          if [ -z "$APP_PATH" ]; then
-            echo "Error: no .app bundle found. Content tree:"
-            find unpacked/ -maxdepth 5 | head -100
-            exit 1
-          fi
-
-          echo "Found .app: $APP_PATH"
           echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
+          echo "Found .app: $APP_PATH"
 
       - name: Create Structure and Inject Geode.ios.dylib
         run: |
           set -e
           mkdir -p ipa_structure/Payload
+          
+          # Копируем с флагом -a, чтобы сохранить права и симлинки
           cp -a "${{ steps.locate_app.outputs.app_path }}" ipa_structure/Payload/GeometryDash.app
-
           APP_BUNDLE="ipa_structure/Payload/GeometryDash.app"
 
-          BINARY_NAME=$(python3 -c "
-          import plistlib
-          try:
-              with open('$APP_BUNDLE/Info.plist','rb') as f:
-                  print(plistlib.load(f).get('CFBundleExecutable',''))
-          except Exception:
-              print('')
-          ")
-
-          if [ -z "$BINARY_NAME" ]; then
-            BINARY_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
-          fi
-
-          TARGET_BINARY="$APP_BUNDLE/$BINARY_NAME"
-
-          if [ ! -f "$TARGET_BINARY" ]; then
-            echo "Binary '$TARGET_BINARY' not found, scanning for Mach-O..."
-            TARGET_BINARY=$(find "$APP_BUNDLE/" -maxdepth 1 -type f -exec file {} \; \
-              | grep -iE "mach-o" | head -n 1 | cut -d: -f1)
-          fi
-
-          if [ -z "$TARGET_BINARY" ] || [ ! -f "$TARGET_BINARY" ]; then
-            echo "Error: could not locate main Mach-O binary."
-            echo "Contents of $APP_BUNDLE:"
-            ls -la "$APP_BUNDLE/"
-            exit 1
-          fi
-
-          echo "Target binary: $TARGET_BINARY"
-          chmod +x "$TARGET_BINARY"
-
-          if [ ! -f "Geode.ios.dylib" ]; then
-            echo "Error: Geode.ios.dylib not found in repository root!"
-            exit 1
-          fi
+          # Копируем dylib
           cp Geode.ios.dylib "$APP_BUNDLE/"
 
+          # Ищем оригинальный бинарник
+          ORIGINAL_BINARY_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
+          
+          # Ищем Mach-O бинарник (если название папки не совпадает)
+          TARGET_BINARY=$(find "$APP_BUNDLE/" -maxdepth 1 -type f -exec file {} \; | grep -iE "mach-o" | head -n 1 | cut -d: -f1)
+          
+          if [ -z "$TARGET_BINARY" ]; then
+             echo "Error: could not locate main Mach-O binary."
+             exit 1
+          fi
+          echo "Original binary found: $TARGET_BINARY"
+          chmod +x "$TARGET_BINARY"
+
+          # Инъекция
           python -c "
           import lief
           binary = lief.parse('$TARGET_BINARY')
@@ -124,13 +78,69 @@ jobs:
           print('Successfully injected Geode.ios.dylib into binary!')
           "
 
-      - name: Pack Everything into Final IPA
+      - name: Fix Geode.tmp issue and Info.plist
+        run: |
+          set -e
+          APP_BUNDLE="ipa_structure/Payload/GeometryDash.app"
+
+          # 1. Ищем любые файлы .tmp (Geode.tmp, Geode.tmp.tmp и т.д.)
+          TMP_FILE=$(find "$APP_BUNDLE" -maxdepth 1 -name "Geode.tmp*" | head -n 1)
+
+          if [ -n "$TMP_FILE" ]; then
+            echo "Found problematic temp file: $TMP_FILE"
+            # Переименовываем оригинальный (пропатченный) бинарник в правильное имя
+            # (например, GeometryDash)
+            REAL_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
+            
+            # Если TMP_FILE это и есть основной бинарник, переименовываем его
+            mv "$TMP_FILE" "$APP_BUNDLE/$REAL_NAME"
+            chmod +x "$APP_BUNDLE/$REAL_NAME"
+            echo "Renamed $TMP_FILE -> $REAL_NAME"
+            
+            # 2. Исправляем Info.plist
+            python3 -c "
+          import plistlib
+          plist_path = '$APP_BUNDLE/Info.plist'
+          with open(plist_path, 'rb') as f:
+              plist = plistlib.load(f)
+          
+          plist['CFBundleExecutable'] = '$REAL_NAME'
+          
+          with open(plist_path, 'wb') as f:
+              plistlib.dump(plist, f)
+          print('Updated CFBundleExecutable to: $REAL_NAME')
+          "
+          else
+            echo "No .tmp files found. Ensuring Info.plist is correct..."
+            REAL_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
+            python3 -c "
+          import plistlib
+          plist_path = '$APP_BUNDLE/Info.plist'
+          with open(plist_path, 'rb') as f:
+              plist = plistlib.load(f)
+          plist['CFBundleExecutable'] = '$REAL_NAME'
+          with open(plist_path, 'wb') as f:
+              plistlib.dump(plist, f)
+          print('Ensured CFBundleExecutable is: $REAL_NAME')
+          "
+          fi
+
+      - name: Clean up and Pack into Final IPA
         run: |
           set -e
           cd ipa_structure
-          zip -q -r ../GeometryDash_Geode_Personal.ipa Payload/
+          
+          # Удаляем мусор macOS, который часто вызывает "Corrupted IPA"
+          find Payload -name ".DS_Store" -delete
+          find Payload -name "__MACOSX" -exec rm -rf {} +
+          
+          # Выдаем права на запуск всему, что в корне .app (на всякий случай)
+          chmod +x Payload/GeometryDash.app/*
+          
+          # ВАЖНО: Флаг -y сохраняет симлинки (без него сервисы выдают Corrupted IPA)
+          zip -qry ../GeometryDash_Geode_Personal.ipa Payload/
+          
           cd ..
-          ls -lh GeometryDash_Geode_Personal.ipa
           echo "IPA packing completed successfully!"
 
       - name: Upload Modded IPA Artifact
