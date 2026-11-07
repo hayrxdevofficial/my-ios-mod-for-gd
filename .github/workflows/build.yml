@@ -26,12 +26,16 @@ jobs:
           curl -L -o "MyApp_2.zip" "$URL"
 
       - name: Unpack Source Archive (Adaptive)
+        id: locate_app # <--- ИСПРАВЛЕНИЕ: Добавлен ID шага для передачи пути
         run: |
           set -e
           mkdir -p unpacked
           unzip -q MyApp_2.zip -d unpacked/
+          
           APP_PATH=$(find unpacked/ -type d -name "*.app" | head -n 1)
+          
           if [ -z "$APP_PATH" ]; then
+            echo "No .app directly, looking for nested zip..."
             NESTED=$(find unpacked/ -maxdepth 4 -name "*.zip" | head -n 1)
             if [ -n "$NESTED" ]; then
               mkdir -p nested/
@@ -39,6 +43,12 @@ jobs:
               APP_PATH=$(find nested/ -type d -name "*.app" | head -n 1)
             fi
           fi
+          
+          if [ -z "$APP_PATH" ]; then
+            echo "Error: Could not find any .app bundle!"
+            exit 1
+          fi
+          
           echo "app_path=$APP_PATH" >> $GITHUB_OUTPUT
           echo "Found .app: $APP_PATH"
 
@@ -54,9 +64,6 @@ jobs:
           # Копируем dylib
           cp Geode.ios.dylib "$APP_BUNDLE/"
 
-          # Ищем оригинальный бинарник
-          ORIGINAL_BINARY_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
-          
           # Ищем Mach-O бинарник (если название папки не совпадает)
           TARGET_BINARY=$(find "$APP_BUNDLE/" -maxdepth 1 -type f -exec file {} \; | grep -iE "mach-o" | head -n 1 | cut -d: -f1)
           
@@ -88,11 +95,9 @@ jobs:
 
           if [ -n "$TMP_FILE" ]; then
             echo "Found problematic temp file: $TMP_FILE"
-            # Переименовываем оригинальный (пропатченный) бинарник в правильное имя
-            # (например, GeometryDash)
             REAL_NAME=$(basename "${{ steps.locate_app.outputs.app_path }}" .app)
             
-            # Если TMP_FILE это и есть основной бинарник, переименовываем его
+            # Переименовываем оригинальный (пропатченный) бинарник в правильное имя
             mv "$TMP_FILE" "$APP_BUNDLE/$REAL_NAME"
             chmod +x "$APP_BUNDLE/$REAL_NAME"
             echo "Renamed $TMP_FILE -> $REAL_NAME"
