@@ -1,0 +1,8 @@
+Package: com.hayrulla.mymenumod
+Name: MyMenuMod
+Version: 1.0.0
+Architecture: iphoneos-arm64
+Description: Custom menu with noclip and icon hack for Geometry Dash
+Maintainer: YourName
+Author: hayrulla
+Section: Tweaks
