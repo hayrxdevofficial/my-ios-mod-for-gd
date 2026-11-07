@@ -116,8 +116,11 @@ jobs:
 
       - name: Inject Dylib into Binary
         run: |
-          pip3 install lief
-          python3 - <<'PY'
+          python3 -m venv .venv
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install lief
+          python - <<'PY'
           import os
           import lief
 
@@ -133,6 +136,7 @@ jobs:
           binary.write(exe_path)
           print(f"✅ Внедрено: {lib_path}")
           PY
+          deactivate
           echo "=== Проверка команд загрузки ==="
           otool -L "$EXE_PATH" | grep -i "$DYLIB_NAME" || echo "⚠️ grep не нашёл, но продолжаем"
 
