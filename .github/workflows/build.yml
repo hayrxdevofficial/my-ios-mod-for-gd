@@ -55,7 +55,6 @@ jobs:
           
           cp -r "$APP_FOLDER" ipa_structure/Payload/GeometryDash.app
           
-          # Копируем ИМЕННО Geode.ios.dylib из корня репозитория
           if [ -f "Geode.ios.dylib" ]; then
             cp Geode.ios.dylib ipa_structure/Payload/GeometryDash.app/
           else
@@ -66,7 +65,6 @@ jobs:
           TARGET_BINARY=$(find ipa_structure/Payload/GeometryDash.app/ -maxdepth 1 -type f -executable | head -n 1)
           echo "Target binary found: $TARGET_BINARY"
           
-          # Инжектим новый файл Geode.ios.dylib через LIEF
           python -c "
           import lief
           binary = lief.parse('$TARGET_BINARY')
@@ -83,7 +81,7 @@ jobs:
           echo "IPA packing completed successfully!"
 
       - name: Upload Modded IPA Artifact
-        uses: actions/artifacts@v4
+        uses: actions/upload-artifact@v4
         with:
           name: GeometryDash_Modded_IPA
           path: GeometryDash_Geode_Personal.ipa
